@@ -11,7 +11,7 @@
         <div id="avatar-container">
             <div id="avatar-view"></div>
             <div class="controls">
-                <button id="start-stop-btn">Start/Stop Session</button>
+                <button id="start-stop-btn">Start Session</button>
                 <button id="clear-log-btn">Clear Log</button>
                 <div id="status">Status: Waiting</div>
             </div>
@@ -24,13 +24,13 @@
         </div>
     </div>
 
-    <!-- Import Map for Three.js and TalkingHead -->
+    <!-- FIX 2: Pinned TalkingHead to stable version @1.18 instead of @main -->
     <script type="importmap">
     {
       "imports": {
         "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
         "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/",
-        "talkinghead": "https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@main/modules/talkinghead.mjs"
+        "talkinghead": "https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.18/modules/talkinghead.mjs"
       }
     }
     </script>

@@ -16,7 +16,9 @@ import uuid
 import warnings
 
 # APT Testing Logs
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -975,6 +977,7 @@ class ToolProcessor:
                 return result
             except Exception as e:
                 import traceback
+
                 logger.error(f"Allocation tool failed: {e}\n{traceback.format_exc()}")
                 print(f"[ERROR] Allocation tool failed: {e}\n{traceback.format_exc()}")
                 return {"error": f"Allocation failed: {e}"}
@@ -1274,9 +1277,9 @@ class BedrockStreamManager:
                 await self.ws_queue.put({"type": "text", "text": text})
 
         elif "audioOutput" in event:
-            # audio_bytes = base64.b64decode(event["audioOutput"]["content"])
-            await self.ws_queue.put({"type": "audio", "data": event["audioOutput"]["content"]})
-
+            await self.ws_queue.put(
+                {"type": "audio", "data": event["audioOutput"]["content"]}
+            )
 
         elif "contentEnd" in event:
             if event.get("contentEnd", {}).get("type") == "TOOL":
@@ -1285,14 +1288,15 @@ class BedrockStreamManager:
                     self.toolName, self.toolUseContent, self.toolUseId
                 )
             else:
-                # End of a standard AI response chunk
                 await self.ws_queue.put({"type": "audio_end"})
 
         elif "toolUse" in event:
             self.toolUseContent = event["toolUse"]
             self.toolName = event["toolUse"]["toolName"]
             self.toolUseId = event["toolUse"]["toolUseId"]
-            logger.info(f"Received tool use request: {self.toolName} with id: {self.toolUseId}")
+            logger.info(
+                f"Received tool use request: {self.toolName} with id: {self.toolUseId}"
+            )
 
     def handle_tool_request(self, tool_name, tool_content, tool_use_id):
         cn = str(uuid.uuid4())
@@ -1313,7 +1317,6 @@ class BedrockStreamManager:
                 self.TOOL_CONTENT_START_EVENT % (self.prompt_name, cn, tool_use_id)
             )
 
-            # Send result
             result_json = json.dumps(result)
             tool_res_event = json.dumps(
                 {
@@ -1332,7 +1335,7 @@ class BedrockStreamManager:
         except Exception as e:
             logger.error(f"Failed to execute or send tool result for {tool_name}: {e}")
 
-
+    # FIX 4: Clean shutdown — flush the send queue before cancelling the send task
     async def close(self):
         logger.info(f"Closing Bedrock stream for session {self.session_id}")
         if not self.is_active:
@@ -1343,6 +1346,16 @@ class BedrockStreamManager:
         )
         await self.send_raw_event(self.PROMPT_END_EVENT % self.prompt_name)
         await self.send_raw_event(self.SESSION_END_EVENT)
+
+        # Wait briefly for the queue to flush before tearing down the send task
+        await asyncio.sleep(0.5)
+        if self.send_task:
+            self.send_task.cancel()
+            try:
+                await self.send_task
+            except asyncio.CancelledError:
+                pass
+
         logger.info("Bedrock stream closed.")
 
 
@@ -1352,13 +1365,16 @@ class BedrockStreamManager:
 
 app = FastAPI()
 
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("Application starting up...")
 
+
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Application shutting down...")
+
 
 # Mount the static folder containing index.html, style.css, app.js
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -1392,10 +1408,8 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 msg = await ws_queue.get()
                 if msg["type"] == "audio":
-                    # Send raw PCM binary data
                     await websocket.send_bytes(base64.b64decode(msg["data"]))
                 else:
-                    # Send text JSON
                     await websocket.send_json(msg)
             except Exception as e:
                 logger.error(f"Sender task error: {e}")
@@ -1411,9 +1425,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Binary audio from browser mic
                 manager.add_audio_chunk(data["bytes"])
             elif "text" in data:
-                # Handle text from client if necessary
-                logger.info(f"Received text from client: {data['text']}")
-                pass
+                # FIX 3: Handle keepalive pings silently, log everything else
+                try:
+                    msg = json.loads(data["text"])
+                    if msg.get("type") == "ping":
+                        pass  # Silently ignore keepalive pings
+                    else:
+                        logger.info(f"Received text from client: {data['text']}")
+                except json.JSONDecodeError:
+                    logger.info(f"Received non-JSON text from client: {data['text']}")
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected.")
     except Exception as e:

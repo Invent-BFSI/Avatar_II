@@ -3,6 +3,7 @@ import { TalkingHead } from 'talkinghead';
 
 let avatar, websocket, audioCtx, micStream, processor;
 let isStreaming = false;
+let keepAliveInterval = null; // FIX 3: keepalive reference
 
 // We buffer incoming audio chunks until the sentence is over to ensure perfect lip sync
 let incomingAudioChunks = [];
@@ -21,22 +22,23 @@ async function initAvatar() {
     });
 
     try {
-        // Load a default Ready Player Me avatar url. (You can place your own .glb in /static/)
-        await avatar.showAvatar('https://models.readyplayer.me/64bfa15f0e72c63d7c3934a6.glb', (ev) => {
+        // FIX: Use local avatar GLB instead of Ready Player Me (service discontinued Jan 2026)
+        await avatar.showAvatar({ url: '/static/aria.glb' }, (ev) => {
             if (ev.lengthComputable) {
-                statusDiv.innerText = `Loading Avatar: ${Math.round((ev.loaded/ev.total)*100)}%`;
+                statusDiv.innerText = `Loading Avatar: ${Math.round((ev.loaded / ev.total) * 100)}%`;
             }
         });
         statusDiv.innerText = "Avatar Ready. Click Start.";
         startStopBtn.disabled = false;
     } catch (error) {
         console.error("Error loading avatar:", error);
-        statusDiv.innerText = "Failed to load Avatar.";
+        statusDiv.innerText = "Avatar failed to load. Voice-only mode available.";
+        startStopBtn.disabled = false; // FIX 1: Re-enable button even on avatar failure
     }
 }
 
 // Helper: Append text to chat
-function logChat(text, role="Aria") {
+function logChat(text, role = "Aria") {
     const div = document.createElement('div');
     div.className = `chat-message ${role}`;
     div.innerHTML = `<strong>${role}:</strong> ${text}`;
@@ -57,10 +59,10 @@ async function toggleSession() {
         // Init AudioContext at exactly 16000Hz (Bedrock Requirement)
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        
+
         const source = audioCtx.createMediaStreamSource(micStream);
         processor = audioCtx.createScriptProcessor(2048, 1, 1);
-        
+
         source.connect(processor);
         processor.connect(audioCtx.destination);
 
@@ -74,6 +76,13 @@ async function toggleSession() {
             statusDiv.innerText = "Status: Listening...";
             startStopBtn.innerText = "Stop Session";
             startStopBtn.disabled = false;
+
+            // FIX 3: Send keepalive ping every 10s to prevent idle WebSocket disconnect
+            keepAliveInterval = setInterval(() => {
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    websocket.send(JSON.stringify({ type: "ping" }));
+                }
+            }, 10000);
         };
 
         // Stream Mic to Backend
@@ -98,6 +107,7 @@ async function toggleSession() {
         console.error("Microphone/WS Error:", err);
         statusDiv.innerText = "Error: Check Mic Permissions.";
         startStopBtn.disabled = false;
+        startStopBtn.innerText = "Start Session";
     }
 }
 
@@ -109,15 +119,16 @@ async function handleServerMessage(event) {
             logChat(msg.text);
         } else if (msg.type === "interrupted") {
             incomingAudioChunks = [];
-            avatar.stop(); 
+            if (avatar) avatar.stop();
         } else if (msg.type === "audio_end") {
             if (incomingAudioChunks.length > 0) {
                 playBufferedAudio(incomingAudioChunks);
-                incomingAudioChunks = []; 
+                incomingAudioChunks = [];
             }
         } else if (msg.type === "system") {
             logChat(`[System: ${msg.text}]`, "System");
         }
+        // msg.type === "pong" or "ping" — silently ignored
     } else if (event.data instanceof ArrayBuffer) {
         // Binary audio chunk (24kHz Int16 PCM)
         const int16View = new Int16Array(event.data);
@@ -130,7 +141,7 @@ function playBufferedAudio(chunks) {
     // Calculate total length
     let totalLength = 0;
     for (const chunk of chunks) totalLength += chunk.length;
-    
+
     // Flatten chunks
     const flattened = new Int16Array(totalLength);
     let offset = 0;
@@ -142,12 +153,17 @@ function playBufferedAudio(chunks) {
     // Wrap in WAV Blob (24000Hz, 1 channel, 16bit)
     const wavBlob = encodeWAV(flattened, 24000);
     const audioUrl = URL.createObjectURL(wavBlob);
-    
+
     // Create HTMLAudioElement and pass to Avatar
     const audio = new Audio(audioUrl);
-    
+
     // Speak using TalkingHead (automatically generates lip-sync)
-    avatar.speakAudio(audio);
+    if (avatar) {
+        avatar.speakAudio(audio);
+    } else {
+        // Fallback: play audio directly if avatar failed to load
+        audio.play();
+    }
 }
 
 // Utility: Build WAV header to make the raw PCM playable by the browser
@@ -181,6 +197,8 @@ function encodeWAV(samples, sampleRate) {
 
 function stopSession() {
     isStreaming = false;
+    clearInterval(keepAliveInterval); // FIX 3: Clear keepalive on stop
+    keepAliveInterval = null;
     if (processor) processor.disconnect();
     if (micStream) micStream.getTracks().forEach(t => t.stop());
     if (websocket) websocket.close();
