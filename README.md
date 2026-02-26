@@ -23,7 +23,7 @@ Investment Advisor Aria is a conversational AI-powered investment advisor chatbo
     ```
 3.  **Create a virtual environment:**
     ```bash
-    python3 -m venv .venv
+    python3 -m veno .venv
     ```
 4.  **Activate the virtual environment:**
     ```bash
@@ -34,7 +34,8 @@ Investment Advisor Aria is a conversational AI-powered investment advisor chatbo
     pip install -r requirements.txt
     ```
 6.  **Set up AWS Credentials:**
-    Make sure you have your AWS credentials set up in `~/.aws/credentials` or as environment variables.
+    - Run `saml2aws login` to generate temporary AWS credentials.
+    - Make sure you have your AWS credentials set up in `~/.aws/credentials` or as environment variables.
 7.  **Run the application:**
     ```bash
     uvicorn app:app --reload
@@ -52,7 +53,12 @@ Investment Advisor Aria is a conversational AI-powered investment advisor chatbo
     ```bash
     cd ai-investment-advisor
     ```
-3.  **Run the setup script:**
+3.  **Login to AWS using saml2aws:**
+    ```bash
+    saml2aws login
+    ```
+    This will generate temporary AWS credentials.
+4.  **Run the setup script:**
     ```bash
     run.bat
     ```
@@ -64,12 +70,12 @@ Investment Advisor Aria is a conversational AI-powered investment advisor chatbo
     - Set the AWS default region to `us-west-2`.
     - Open a new command prompt with the environment set up.
 
-4.  **Run the application:**
+5.  **Run the application:**
     In the new command prompt that opens, run the following command:
     ```bash
     uvicorn app:app --reload
     ```
-5.  **Open the application in your browser:**
+6.  **Open the application in your browser:**
     Open your web browser and go to `http://127.0.0.1:8000`.
 
 ## Tech Stack
