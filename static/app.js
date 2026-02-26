@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { TalkingHead } from 'talkinghead';
 
-let avatar, websocket, audioCtx, micStream, processor;
+let avatar, websocket, audioCtx, micStream, workletNode;
 let isStreaming = false;
 let keepAliveInterval = null; // FIX 3: keepalive reference
 
@@ -58,13 +58,20 @@ async function toggleSession() {
     try {
         // Init AudioContext at exactly 16000Hz (Bedrock Requirement)
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        
+        // Resume AudioContext on user gesture
+        await audioCtx.resume();
+
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
         const source = audioCtx.createMediaStreamSource(micStream);
-        processor = audioCtx.createScriptProcessor(2048, 1, 1);
-
-        source.connect(processor);
-        processor.connect(audioCtx.destination);
+        
+        // Add the audio worklet module
+        await audioCtx.audioWorklet.addModule('/static/audio-worklet-processor.js');
+        workletNode = new AudioWorkletNode(audioCtx, 'audio-sender-processor');
+        
+        source.connect(workletNode);
+        workletNode.connect(audioCtx.destination);
 
         // Connect WebSocket
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -85,16 +92,11 @@ async function toggleSession() {
             }, 10000);
         };
 
-        // Stream Mic to Backend
-        processor.onaudioprocess = (e) => {
-            if (!isStreaming || websocket.readyState !== WebSocket.OPEN) return;
-            const floatData = e.inputBuffer.getChannelData(0);
-            const intData = new Int16Array(floatData.length);
-            for (let i = 0; i < floatData.length; i++) {
-                // Convert Float32 to Int16
-                intData[i] = Math.max(-1, Math.min(1, floatData[i])) * 32767;
+        // Handle messages from the worklet processor
+        workletNode.port.onmessage = (event) => {
+            if (isStreaming && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(event.data);
             }
-            websocket.send(intData.buffer);
         };
 
         websocket.onmessage = handleServerMessage;
@@ -199,9 +201,10 @@ function stopSession() {
     isStreaming = false;
     clearInterval(keepAliveInterval); // FIX 3: Clear keepalive on stop
     keepAliveInterval = null;
-    if (processor) processor.disconnect();
+    if (workletNode) workletNode.disconnect();
     if (micStream) micStream.getTracks().forEach(t => t.stop());
     if (websocket) websocket.close();
+    if (audioCtx) audioCtx.close();
     statusDiv.innerText = "Status: Disconnected";
     startStopBtn.disabled = false;
     startStopBtn.innerText = "Start Session";
