@@ -12,7 +12,7 @@ Investment Advisor Aria is a conversational AI-powered investment advisor chatbo
 ## Installation
 1.  **Clone the repository:**
     ```bash
-    git clone https://soumakpaul25-admin@bitbucket.org/soumakpaul25/aria-advisor.git
+    git clone https://soumakpaul25-admin@bitbucket.org/soumakpaul25/ai-investment-advisor.git
     ```
 2.  **Navigate to the project directory:**
     ```bash
