@@ -5,12 +5,14 @@ let avatar, websocket, audioCtx, micStream, workletNode;
 let isStreaming = false;
 let keepAliveInterval = null;
 
+// Buffer incoming audio chunks until the turn ends for lip sync
 let incomingAudioChunks = [];
+
+// Accumulate text chunks; only display when the turn ends
 let pendingText = '';
 
-// Deduplication: normalize and store recent Aria messages to suppress Bedrock echoes
-const recentAriaMessages = [];
-const DEDUP_WINDOW = 3; // remember last 3 messages
+// Deduplication: track last logged Aria message to prevent Bedrock echo repeats
+let lastLoggedText = '';
 
 const avatarView = document.getElementById('avatar-view');
 const startStopBtn = document.getElementById('start-stop-btn');
@@ -18,8 +20,9 @@ const clearLogBtn = document.getElementById('clear-log-btn');
 const statusDiv = document.getElementById('status');
 const chatLog = document.getElementById('chat-log');
 
-// Shared playback AudioContext (created after user gesture)
+// Shared AudioContext for playback (created on first use after user gesture)
 let playbackCtx = null;
+
 function getPlaybackCtx() {
     if (!playbackCtx || playbackCtx.state === 'closed') {
         playbackCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
@@ -27,55 +30,9 @@ function getPlaybackCtx() {
     return playbackCtx;
 }
 
-// ─── LIP ANIMATION ───────────────────────────────────────────────────────────
-
-let lipAnimationId = null;
-
-function startLipAnimation() {
-    stopLipAnimation();
-    if (!avatar) return;
-
-    const startTime = performance.now();
-    function animate() {
-        const elapsed = (performance.now() - startTime) / 1000;
-        // Sine wave jaw open/close at ~4Hz (natural speech rhythm)
-        const openAmount = Math.max(0, Math.sin(elapsed * 4 * Math.PI) * 0.5 + 0.15);
-        try {
-            // TalkingHead exposes morphTargetInfluences on the head mesh
-            // Try both common morph target names for jaw open
-            if (avatar.head && avatar.head.morphTargetDictionary) {
-                const dict = avatar.head.morphTargetDictionary;
-                const influences = avatar.head.morphTargetInfluences;
-                const jawIdx = dict['jawOpen'] ?? dict['mouthOpen'] ?? dict['jaw_open'] ?? -1;
-                if (jawIdx >= 0) influences[jawIdx] = openAmount;
-            }
-        } catch (e) { /* ignore */ }
-        lipAnimationId = requestAnimationFrame(animate);
-    }
-    lipAnimationId = requestAnimationFrame(animate);
-}
-
-function stopLipAnimation() {
-    if (lipAnimationId !== null) {
-        cancelAnimationFrame(lipAnimationId);
-        lipAnimationId = null;
-    }
-    // Close jaw when done
-    if (avatar) {
-        try {
-            if (avatar.head && avatar.head.morphTargetDictionary) {
-                const dict = avatar.head.morphTargetDictionary;
-                const influences = avatar.head.morphTargetInfluences;
-                const jawIdx = dict['jawOpen'] ?? dict['mouthOpen'] ?? dict['jaw_open'] ?? -1;
-                if (jawIdx >= 0) influences[jawIdx] = 0;
-            }
-        } catch (e) { /* ignore */ }
-    }
-}
-
 // ─── AUDIO PLAYBACK ──────────────────────────────────────────────────────────
 
-// Int16 PCM → Float32 AudioBuffer
+// Convert Int16 PCM → Float32 AudioBuffer (required by Web Audio API and TalkingHead)
 async function pcmToAudioBuffer(pcmInt16Array, sampleRate) {
     const ctx = getPlaybackCtx();
     await ctx.resume();
@@ -88,25 +45,48 @@ async function pcmToAudioBuffer(pcmInt16Array, sampleRate) {
     return audioBuffer;
 }
 
-// Play audio + animate lips for the duration
-async function playWithLipSync(pcmInt16Array) {
+// Play audio through TalkingHead — drives both audio output AND lip-sync visemes
+async function speakWithLipSync(pcmInt16Array) {
+    if (!avatar) return false;
     try {
-        const ctx = getPlaybackCtx();
-        await ctx.resume();
+        // Resume TalkingHead's AudioContext (Chrome requires user gesture first)
+        if (avatar.audioCtx) await avatar.audioCtx.resume();
+
         const audioBuffer = await pcmToAudioBuffer(pcmInt16Array, 24000);
+
+        // TalkingHead.speakAudio({ audio: AudioBuffer }) plays audio + generates
+        // English phoneme visemes automatically for lip sync
+        await avatar.speakAudio({ audio: audioBuffer });
+        return true;
+    } catch (err) {
+        console.error('speakAudio error:', err);
+        return false;
+    }
+}
+
+// Fallback: plain Web Audio playback when avatar is not loaded
+let audioQueue = [];
+let isPlayingAudio = false;
+
+async function playNextInQueue() {
+    if (isPlayingAudio || audioQueue.length === 0) return;
+    isPlayingAudio = true;
+    const pcmChunk = audioQueue.shift();
+    try {
+        const audioBuffer = await pcmToAudioBuffer(pcmChunk, 24000);
+        const ctx = getPlaybackCtx();
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(ctx.destination);
-
-        startLipAnimation();
-
         source.onended = () => {
-            stopLipAnimation();
+            isPlayingAudio = false;
+            playNextInQueue();
         };
         source.start(0);
     } catch (err) {
-        console.error('Audio playback error:', err);
-        stopLipAnimation();
+        console.error('Fallback audio error:', err);
+        isPlayingAudio = false;
+        playNextInQueue();
     }
 }
 
@@ -116,7 +96,8 @@ async function initAvatar() {
     avatar = new TalkingHead(avatarView, {
         cameraView: 'head',
         ttsEndpoint: null,
-        lipsyncLang: 'en'
+        pcmSampleRate: 24000,  // Bedrock Nova-2-Sonic outputs 24kHz PCM
+        lipsyncLang: 'en'      // Built-in English phoneme → viseme lip sync
     });
 
     try {
@@ -136,25 +117,16 @@ async function initAvatar() {
 
 // ─── CHAT LOG ────────────────────────────────────────────────────────────────
 
-// Normalize text for dedup comparison: lowercase, collapse whitespace, strip punctuation
-function normalizeText(text) {
-    return text.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
-}
-
 function logChat(text, role = 'Aria') {
     const trimmed = text && text.trim();
     if (!trimmed) return;
 
-    // Deduplicate Bedrock echoes: check if normalized version was recently logged
-    if (role === 'Aria') {
-        const normalized = normalizeText(trimmed);
-        if (recentAriaMessages.includes(normalized)) {
-            console.warn('Duplicate suppressed:', trimmed.substring(0, 60));
-            return;
-        }
-        recentAriaMessages.push(normalized);
-        if (recentAriaMessages.length > DEDUP_WINDOW) recentAriaMessages.shift();
+    // Deduplicate: Bedrock re-sends the full response after an interruption/silence
+    if (role === 'Aria' && trimmed === lastLoggedText) {
+        console.warn('Duplicate Aria message suppressed:', trimmed.substring(0, 60));
+        return;
     }
+    if (role === 'Aria') lastLoggedText = trimmed;
 
     const div = document.createElement('div');
     div.className = `chat-message ${role}`;
@@ -166,18 +138,24 @@ function logChat(text, role = 'Aria') {
 // ─── SESSION MANAGEMENT ──────────────────────────────────────────────────────
 
 async function toggleSession() {
-    if (isStreaming) { stopSession(); return; }
-
+    if (isStreaming) {
+        stopSession();
+        return;
+    }
     startStopBtn.disabled = true;
     startStopBtn.innerText = 'Connecting...';
 
     try {
-        // AudioContext must be created/resumed after a user gesture (Chrome policy)
+        // Create AudioContext AFTER user gesture (Chrome autoplay policy)
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
         await audioCtx.resume();
 
-        // Resume TalkingHead's internal AudioContext with the same user gesture
-        if (avatar && avatar.audioCtx) await avatar.audioCtx.resume();
+        // Resume TalkingHead's internal AudioContext now that we have a user gesture
+        if (avatar && avatar.audioCtx) {
+            await avatar.audioCtx.resume();
+        }
+
+        // Pre-warm the shared playback context too
         await getPlaybackCtx().resume();
 
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -185,6 +163,7 @@ async function toggleSession() {
 
         await audioCtx.audioWorklet.addModule('/static/audio-worklet-processor.js');
         workletNode = new AudioWorkletNode(audioCtx, 'audio-sender-processor');
+
         source.connect(workletNode);
         workletNode.connect(audioCtx.destination);
 
@@ -199,7 +178,7 @@ async function toggleSession() {
             startStopBtn.disabled = false;
 
             keepAliveInterval = setInterval(() => {
-                if (websocket?.readyState === WebSocket.OPEN) {
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
                     websocket.send(JSON.stringify({ type: 'ping' }));
                 }
             }, 10000);
@@ -212,7 +191,7 @@ async function toggleSession() {
         };
 
         websocket.onmessage = handleServerMessage;
-        websocket.onclose = () => stopSession();
+        websocket.onclose = () => { stopSession(); };
 
     } catch (err) {
         console.error('Microphone/WS Error:', err);
@@ -234,14 +213,18 @@ async function handleServerMessage(event) {
         } else if (msg.type === 'interrupted') {
             incomingAudioChunks = [];
             pendingText = '';
-            stopLipAnimation();
+            audioQueue = [];
+            isPlayingAudio = false;
+            if (avatar) avatar.stop();
 
         } else if (msg.type === 'audio_end') {
+            // Display accumulated text (deduplicated)
             if (pendingText.trim()) {
                 logChat(pendingText.trim());
                 pendingText = '';
             }
 
+            // Play buffered PCM with lip sync
             if (incomingAudioChunks.length > 0) {
                 let totalLength = 0;
                 for (const c of incomingAudioChunks) totalLength += c.length;
@@ -250,12 +233,17 @@ async function handleServerMessage(event) {
                 for (const c of incomingAudioChunks) { flattened.set(c, offset); offset += c.length; }
                 incomingAudioChunks = [];
 
-                await playWithLipSync(flattened);
+                const usedAvatar = await speakWithLipSync(flattened);
+                if (!usedAvatar) {
+                    audioQueue.push(flattened);
+                    playNextInQueue();
+                }
             }
 
         } else if (msg.type === 'system') {
             logChat(`[System: ${msg.text}]`, 'System');
         }
+        // 'ping' / 'pong' silently ignored
 
     } else if (event.data instanceof ArrayBuffer) {
         incomingAudioChunks.push(new Int16Array(event.data));
@@ -270,7 +258,8 @@ function stopSession() {
     keepAliveInterval = null;
     pendingText = '';
     incomingAudioChunks = [];
-    stopLipAnimation();
+    audioQueue = [];
+    isPlayingAudio = false;
     if (workletNode) workletNode.disconnect();
     if (micStream) micStream.getTracks().forEach(t => t.stop());
     if (websocket) websocket.close();
@@ -282,8 +271,10 @@ function stopSession() {
 
 function clearLog() {
     chatLog.innerHTML = '';
-    recentAriaMessages.length = 0;
+    lastLoggedText = '';
 }
+
+// ─── INIT ────────────────────────────────────────────────────────────────────
 
 startStopBtn.addEventListener('click', toggleSession);
 clearLogBtn.addEventListener('click', clearLog);
