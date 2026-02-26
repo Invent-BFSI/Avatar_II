@@ -17,7 +17,7 @@ const clearLogBtn = document.getElementById('clear-log-btn');
 const statusDiv = document.getElementById('status');
 const chatLog = document.getElementById('chat-log');
 
-// Web Audio playback queue (FIX 1: bypass avatar for audio)
+// Web Audio fallback queue (used only when avatar is not loaded)
 let audioQueue = [];
 let isPlayingAudio = false;
 
@@ -40,12 +40,6 @@ function playNextInQueue() {
                 playNextInQueue();
             };
             source.start(0);
-
-            // Also drive avatar lip sync if available
-            if (avatar) {
-                const audio = new Audio(URL.createObjectURL(wavBlob));
-                avatar.speakAudio(audio);
-            }
         } catch (err) {
             console.error('Audio decode error:', err);
             isPlayingAudio = false;
@@ -56,11 +50,30 @@ function playNextInQueue() {
     reader.readAsArrayBuffer(wavBlob);
 }
 
+// Play audio through TalkingHead (handles both playback + lip sync viseme generation)
+function speakWithLipSync(pcmInt16Array) {
+    if (!avatar) return false;
+    try {
+        // TalkingHead.speakAudio expects: { audio: ArrayBuffer|TypedArray, lipsyncLang: 'en', ... }
+        // It plays the PCM audio AND auto-generates visemes for lip sync
+        avatar.speakAudio({
+            audio: pcmInt16Array.buffer,
+            lipsyncLang: 'en'
+        });
+        return true;
+    } catch (err) {
+        console.error('speakAudio error:', err);
+        return false;
+    }
+}
+
 // 1. Initialize 3D Scene & TalkingHead
 async function initAvatar() {
     avatar = new TalkingHead(avatarView, {
         cameraView: 'head',
-        ttsEndpoint: null
+        ttsEndpoint: null,
+        pcmSampleRate: 24000,   // Bedrock Nova-2-Sonic outputs 24kHz PCM
+        lipsyncLang: 'en'        // Enable built-in English lip-sync viseme generation
     });
 
     try {
@@ -155,23 +168,36 @@ async function handleServerMessage(event) {
 
         } else if (msg.type === 'interrupted') {
             incomingAudioChunks = [];
-            pendingText = '';          // FIX 2: discard partial text on interrupt
+            pendingText = '';
             audioQueue = [];
             isPlayingAudio = false;
             if (avatar) avatar.stop();
 
         } else if (msg.type === 'audio_end') {
-            // FIX 2: flush accumulated text once the full turn is done
+            // Flush accumulated text once the full turn is done
             if (pendingText.trim()) {
                 logChat(pendingText.trim());
                 pendingText = '';
             }
-            // FIX 1: play buffered audio
+            // Play buffered PCM audio
             if (incomingAudioChunks.length > 0) {
-                const wavBlob = buildWavBlob(incomingAudioChunks);
+                // Flatten all chunks into a single Int16Array
+                let totalLength = 0;
+                for (const c of incomingAudioChunks) totalLength += c.length;
+                const flattened = new Int16Array(totalLength);
+                let offset = 0;
+                for (const c of incomingAudioChunks) { flattened.set(c, offset); offset += c.length; }
                 incomingAudioChunks = [];
-                audioQueue.push(wavBlob);
-                playNextInQueue();
+
+                // Prefer TalkingHead (handles playback + lip sync visemes automatically)
+                const usedAvatar = speakWithLipSync(flattened);
+
+                // Fallback: plain Web Audio playback if avatar not loaded
+                if (!usedAvatar) {
+                    const wavBlob = buildWavBlob([flattened]);
+                    audioQueue.push(wavBlob);
+                    playNextInQueue();
+                }
             }
 
         } else if (msg.type === 'system') {
@@ -185,15 +211,13 @@ async function handleServerMessage(event) {
     }
 }
 
-// 4. Build a WAV Blob from accumulated PCM chunks
+// 4. Build a WAV Blob from PCM chunks (fallback for voice-only mode)
 function buildWavBlob(chunks) {
     let totalLength = 0;
     for (const c of chunks) totalLength += c.length;
-
     const flattened = new Int16Array(totalLength);
     let offset = 0;
     for (const c of chunks) { flattened.set(c, offset); offset += c.length; }
-
     return encodeWAV(flattened, 24000);
 }
 
