@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+websockets
+aws-sdk-bedrock-runtime
+smithy-aws-core
+pytz
