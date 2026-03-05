@@ -1,23 +1,23 @@
 * { box-sizing: border-box; font-family: sans-serif; }
-body { margin: 0; background: #121212; color: #fff; display: flex; height: 100vh; }
+body { margin: 0; background: #7f91da; color: antiquewhite; display: flex; height: 100vh; }
 #app { display: flex; width: 100%; }
 
 #avatar-container {
     flex: 1;
     display: flex;
     flex-direction: column;
-    border-right: 1px solid #333;
+    border-right: 0px solid #568ace;
     position: relative;
 }
 
 #avatar-view {
     flex: 1;
-    background: #1e1e1e;
+    background: skyblue;
 }
 
 .controls {
     padding: 20px;
-    background: #222;
+    background: antiquewhite;
     text-align: center;
 }
 
@@ -25,7 +25,7 @@ button {
     padding: 10px 20px;
     font-size: 16px;
     border: none;
-    background: #007bff;
+    background: indigo;
     color: white;
     border-radius: 4px;
     cursor: pointer;
@@ -38,12 +38,12 @@ button:disabled { background: #555; cursor: not-allowed; }
     display: flex;
     flex-direction: column;
     padding: 20px;
-    background: #1a1a1a;
+    background: skyblue;
 }
 #chat-log {
     flex: 1;
     overflow-y: auto;
-    background: #222;
+    background: indigo;
     padding: 15px;
     border-radius: 8px;
 }

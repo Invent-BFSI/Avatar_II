@@ -13,7 +13,7 @@ pip install "pyaudio>=0.2.13" "rx>=3.2.0" "smithy-aws-core>=0.0.1" "pytz" "aws_s
 
 :: 3 & 4. Parse credentials file and set variables
 echo Reading credentials from file...
-set "CRED_FILE=C:\Users\2048498\.aws\credentials"
+set "CRED_FILE=C:\Users\navin\.aws\credentials"
 
 for /f "usebackq tokens=1,2 delims==" %%A in ("%CRED_FILE%") do (
     set "key=%%A"

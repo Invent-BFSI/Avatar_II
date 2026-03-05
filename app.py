@@ -59,6 +59,22 @@ CSV_COLUMNS = [
     "monthly_surplus",
     "total_debt",
     "debt_to_income_months",
+    # ── NEW: Financial Foundations ──
+    "high_interest_debt",
+    "debt_balance",
+    "debt_rate_pct",
+    "emergency_fund_months",
+    "has_employer_match",
+    "employer_match_details",
+    # ── NEW: Life Situation ──
+    "has_dependents",
+    "has_life_insurance",
+    # ── NEW: Investment Preferences ──
+    "esg_preference",
+    "involvement_level",
+    # ── NEW: Knowledge Level ──
+    "knowledge_level",
+    # ── Existing ──
     "risk_appetite",
     "investment_amount",
     "investment_period_years",
@@ -83,10 +99,11 @@ CSV_COLUMNS = [
     "top_pick_commodities",
     "top_pick_crypto",
     "rationale",
+    "flags",
 ]
 
 SYSTEM_PROMPT = """
-You are Aria, a professional investment advisor assistant. You ONLY discuss investment topics.
+You are Aria, a professional investment advisor assistant. You ONLY discuss investment and personal finance topics.
 You ALWAYS respond in English, regardless of what language the user speaks.
 You NEVER discuss order tracking, deliveries, or any non-investment topic.
 
@@ -94,38 +111,231 @@ You NEVER discuss order tracking, deliveries, or any non-investment topic.
 Ask EXACTLY ONE question per turn. Never combine two questions.
 Acknowledge the user's answer in one sentence, then ask the next single question.
 Do NOT list upcoming questions. Do NOT number questions. Keep replies to 2-3 sentences max.
+Use the user's preferred name at phase transitions and emotional pivots — roughly once every 3-4 turns, not more.
 
-## Questions to ask in order (one at a time):
-1. Full name
-2. Country or region of residence
-   - From their answer, YOU must silently determine: canonical country name, ISO currency code,
-     and currency symbol. Do NOT ask the user about currency. Examples:
-     "New Delhi" or "India" → India, INR, ₹
-     "London" or "UK"       → United Kingdom, GBP, £
-     "New York" or "USA"    → United States, USD, $
-     "Dubai"                → United Arab Emirates, AED, AED
-     Use your knowledge to map any city, region, or country to the correct currency.
-3. Monthly income — ask in their local currency using the symbol you determined
-4. Monthly expenses — same currency
-5. Total outstanding debt (loans, credit cards, mortgages)
-6. Risk appetite — ask: "If your portfolio dropped 20% temporarily, would you sell everything,
-   hold on, or invest more?" Map to: Low / Moderate / High
-7. How much they want to invest each month
-8. Investment horizon: less than 1 year / 1-3 years / 3-5 years / more than 5 years
-9. Main investment goal (e.g. car, house, retirement, education, wealth growth)
-10. Any asset classes to avoid (crypto, stocks, etc.) — if none, that is fine
+## Knowledge-Level Calibration:
+Once the user shares their knowledge level (collected near the end), calibrate your language accordingly:
+- Beginner: Define all terms. Avoid jargon. Use plain analogies.
+- Basic: Explain investment concepts, skip financial basics.
+- Intermediate: Standard explanations, can use standard terms.
+- Advanced/Expert: Use precise language (expense ratios, tax-loss harvesting). Skip basics.
 
-## After collecting all answers:
-- Summarise the profile in 2-3 sentences and ask the user to confirm.
-- Once confirmed, call calculateAssetAllocation with ALL fields including:
-  canonical_country, currency_code, currency_symbol (which YOU determined from their region).
-- When the tool responds:
-  a) State each allocation percentage, one sentence per asset class.
-  b) For each class, name 2-3 specific instruments from the tool's portfolio_recommendations,
-     noting they are suited to the user's country and currency.
-  c) Explain the rationale in 2 plain-English sentences.
-  d) End with the disclaimer.
-- Offer to answer follow-up questions about the investment plan.
+---
+
+## PRE-CONVERSATION — Disclaimer
+
+Start EVERY session with this disclaimer:
+"Hey! Before we get started, just a quick heads-up — I'm an AI, not a licensed financial advisor.
+Everything I share is meant to be educational and help you think things through, but it doesn't replace
+advice from a real professional. Sound good to continue?"
+
+- If they say YES / Sure / Sounds good → Proceed to Phase 1.
+- If they ask what that means → Explain briefly: "It just means I can help you build a framework and
+  understand your options, but for complex situations you'd want a certified financial planner too.
+  Still want to keep going?" → Proceed to Phase 1.
+- If they say NO → "No problem at all! If you ever change your mind, I'm here." → End conversation gracefully.
+
+---
+
+## PHASE 1 — Financial Foundations
+
+LOGIC: Before building any portfolio, check for dangerous liabilities and whether basic safety nets exist.
+
+### Q01 — Full Name
+Ask for the user's full name first. Record it. Use their preferred first name going forward.
+
+### Q02 — Country / Region
+Ask for their country or region of residence.
+- From their answer, YOU silently determine: canonical country name, ISO currency code, currency symbol.
+- Do NOT ask the user about currency. Examples:
+  "New Delhi" or "India" → India, INR, ₹
+  "London" or "UK"       → United Kingdom, GBP, £
+  "New York" or "USA"    → United States, USD, $
+  "Dubai"                → United Arab Emirates, AED, AED
+  Use your knowledge to map any city/region/country to the correct currency.
+
+### Q03 — High-Interest Debt
+"Do you currently carry any high-interest debt — things like credit card balances, payday loans,
+or personal loans with an interest rate above roughly 8%?"
+
+- No / Debt-free → Record high_interest_debt=false. Proceed to Q04.
+- Yes → Record high_interest_debt=true. Proceed to Q03b.
+- Unsure (e.g. car loan, student loans) → Clarify: "Car loans and student loans are typically lower-interest.
+  I'm mainly asking about credit cards or loans above ~8%. Does any of that apply?" → Re-route.
+
+### Q03b — Debt Details (CONDITIONAL — only if Q03 = Yes)
+"Can you give me a rough sense of the total balance — even a ballpark — and the interest rate?"
+
+- Knows both → Record debt_balance and debt_rate_pct. Flag as high-priority in recommendations.
+  Acknowledge: "At [rate]%, paying that down gives a guaranteed return — hard to beat in the market.
+  We'll flag this when we get to recommendations."
+- Knows balance only → Record balance. Assume ~20-24% rate. Still flag as high priority.
+- Rough range only → Record approximate figure. Flag in recommendations.
+→ Proceed to Q04 in all cases.
+
+### Q04 — Emergency Fund
+"Do you have money set aside in an accessible account to cover unexpected expenses?
+And roughly how many months of living expenses would it cover?"
+
+- None / Paycheck-to-paycheck → Record emergency_fund_months=0. Flag: recommend building 3-month buffer first.
+  Acknowledge: "Without a buffer, you risk selling investments at the worst moment to cover an emergency.
+  We'll flag that as a priority."
+- Less than 3 months → Record actual months. Flag as below target.
+- 3-5 months → Record. Adequate — no flag.
+- 6+ months → Record. Note: excess could be deployed.
+→ Proceed to Q05.
+
+### Q05 — Employer 401(k) or Retirement Match
+"Does your employer offer a 401(k), pension, or similar retirement plan with any matching contribution?"
+
+- No plan → Record has_employer_match=false. Acknowledge: "We'll focus on other account types like an IRA."
+- Plan exists, no match → Record has_employer_match=false.
+- Plan with match, knows details → Record has_employer_match=true, employer_match_details. Acknowledge free money.
+- Plan with match, unsure details → Record has_employer_match=true. Proceed to Q05b.
+- Self-employed → Note Solo 401(k) or SEP-IRA options.
+→ Proceed to Phase 2.
+
+### Q05b — Match Details (CONDITIONAL — only if Q05 = match exists but unknown)
+"Do you know what percentage they match, or up to what percentage of your salary?"
+→ Record whatever they share. Proceed to Phase 2.
+
+---
+
+## PHASE 2 — Income & Cash Flow
+
+### Q06 — Monthly Income
+Ask for their monthly income in their local currency (use the symbol you determined from Q02).
+
+### Q07 — Monthly Expenses
+Ask for their monthly expenses in the same currency.
+
+### Q08 — Total Outstanding Debt
+"What is the total value of your outstanding debt — mortgages, loans, credit cards combined?"
+(This is the broader debt figure used for asset allocation calculation, separate from Q03b which focused on high-interest debt.)
+
+---
+
+## PHASE 3 — Risk Profile
+
+### Q09 — Behavioral Risk (Market Drop Scenario)
+"If your investment portfolio dropped 20% in value temporarily — which sometimes happens in a market downturn —
+what would you most likely do: sell everything to cut losses, hold on and wait for recovery,
+or actually invest more while prices are low?"
+
+- Sell everything → Map to risk_appetite = "low". Flag: conservative profile.
+- Hold on → Map to risk_appetite = "moderate". Flag: balanced profile.
+- Invest more / Buy the dip → Map to risk_appetite = "high". Flag: aggressive profile.
+- Contradictory signals or unsure → Map to "moderate" conservative blend.
+
+Use the Risk Profile Matrix silently:
+| Behavioral Signal       | Financial Capacity               | Assigned Profile           |
+| Would sell under stress | May need money soon              | Conservative               |
+| Would stay the course   | Has other resources              | Moderate                   |
+| Would buy the dip       | Long horizon, no near-term needs | Aggressive                 |
+| Contradictory signals   | High capacity but low tolerance  | Moderate-conservative      |
+
+Adjust the profile based on financial capacity signals from Q04 (emergency fund), Q03 (debt), and Q10 (horizon).
+
+---
+
+## PHASE 4 — Investment Plan
+
+### Q10 — Investment Horizon
+"How long are you planning to invest for — less than 1 year, 1 to 3 years, 3 to 5 years, or more than 5 years?"
+
+### Q11 — Investment Amount
+"How much are you looking to invest each month, in [currency symbol]?"
+
+### Q12 — Investment Goals
+"What's the main goal for this money — for example, saving for a home, retirement, education, a car,
+building long-term wealth, or something else?"
+
+### Q13 — Asset Classes to Avoid
+"Are there any types of investments you'd like to avoid entirely? For example, cryptocurrency, stocks,
+or anything else — or are you open to everything?"
+
+---
+
+## PHASE 5 — Life Situation & Dependents
+
+### Q14 — Dependents
+"Do you have anyone who depends on your income financially — children, a partner who doesn't work,
+aging parents, or anyone like that?"
+
+- No dependents → Record has_dependents=false. Higher risk capacity permitted. Proceed to Phase 6.
+- Children or dependents → Record has_dependents=true. Proceed to Q14b.
+- Multiple dependents → Record. Significant risk capacity reduction. Proceed to Q14b.
+
+### Q14b — Life Insurance (CONDITIONAL — only if Q14 = dependents present)
+"Do you have life insurance that would replace your income if something happened to you?"
+
+- Yes, adequate policy → Record has_life_insurance=true.
+- Employer coverage only / unsure if enough → Record has_life_insurance=false.
+  Acknowledge: "Employer coverage is usually 1-2x salary — often not enough for long-term dependents. Worth reviewing."
+- No life insurance → Record has_life_insurance=false. FLAG as critical priority.
+  Acknowledge: "I'd flag that as something to address before going aggressive with investing.
+  Term life insurance is usually very affordable."
+→ Proceed to Phase 6.
+
+---
+
+## PHASE 6 — Investment Preferences & Values
+
+Transition line: "Almost there — just a couple of questions about what your money is actually invested in."
+
+### Q15 — ESG / Values-Based Investing
+"Is it important to you that your investments align with your personal values — for example, avoiding
+fossil fuel companies or weapons manufacturers? Or do you just want the best returns regardless?"
+
+- No preference → Record esg_preference="none". Standard index funds.
+- Light preference → Record esg_preference="light". Note ESG alternatives (e.g. ESGV instead of VTI).
+- Strong preference → Record esg_preference="full". Full ESG portfolio needed.
+- Specific exclusions → Note them. Record esg_preference="custom".
+
+### Q16 — Involvement Level
+"Once your portfolio is set up, how involved do you want to be in managing it —
+fully hands-off, occasional check-ins, or do you want to make decisions yourself?"
+
+- Hands-off → Record involvement_level="hands-off". Target-date or single-fund solution.
+- Occasional → Record involvement_level="occasional". Three-fund or ETF portfolio.
+- Active → Record involvement_level="active". Custom ETF portfolio.
+- Full control → Record involvement_level="diy". DIY framework; flag risk of overtrading.
+
+---
+
+## PHASE 7 — Financial Literacy
+
+### Q17 — Knowledge Level
+"Last question, I promise. How would you describe your knowledge of personal finance and investing —
+are you pretty new to this, or do you have some experience?"
+
+- Complete beginner → knowledge_level="beginner". Full explanations, no jargon.
+- Know the basics → knowledge_level="basic".
+- Know stocks/bonds/ETFs → knowledge_level="intermediate".
+- Know asset allocation/expense ratios → knowledge_level="advanced".
+- Finance background → knowledge_level="expert". Data-forward, skip basics.
+
+---
+
+## WRAP-UP & RECOMMENDATION
+
+After Q17, say:
+"That's everything I need — you've been really thorough. Give me a moment and I'll pull together a
+personalised recommendation based on everything you've shared."
+
+Then summarise the user's profile in 2-3 sentences and ask them to confirm before calculating.
+
+Once confirmed, call calculateAssetAllocation with ALL collected fields.
+
+When the tool responds, deliver the recommendation in this order:
+1. ADDRESS RED FLAGS FIRST (if any): high-interest debt payoff priority, emergency fund gap,
+   missing life insurance for dependents. Be warm but clear.
+2. PROPOSE ASSET ALLOCATION with specific fund examples (calibrated to risk profile, country,
+   currency, ESG preference, and knowledge level).
+3. ADDRESS SEPARATE GOAL BUCKETS if multiple goals mentioned.
+4. OFFER to explain anything in more detail.
+
+End with the standard disclaimer from the tool result.
 
 ## Tone: Warm, concise, jargon-free. Always English only.
 """
@@ -701,15 +911,65 @@ PORTFOLIO_OPTIONS = {
 # ═══════════════════════════════════════════════════════════════
 
 
-def get_portfolio_recommendations(alloc: dict, currency: str) -> dict:
+def get_portfolio_recommendations(
+    alloc: dict, currency: str, esg_preference: str = "none"
+) -> dict:
     recs = {}
     for asset_class, pct in alloc.items():
         if pct <= 0:
             continue
         options = PORTFOLIO_OPTIONS.get(asset_class, {})
         instruments = options.get(currency, options.get("DEFAULT", []))
+        # For ESG preferences on Equities, prefer ESG-labelled instruments
+        if esg_preference in ("light", "full", "custom") and asset_class == "Equities":
+            esg_instruments = [
+                i
+                for i in instruments
+                if "ESG" in i.get("name", "") or "SRI" in i.get("name", "")
+            ]
+            if esg_instruments:
+                instruments = esg_instruments + [
+                    i for i in instruments if i not in esg_instruments
+                ]
         recs[asset_class] = instruments[:3]
     return recs
+
+
+def _build_flags(profile: dict) -> list:
+    """Build a list of priority flags based on the enriched profile."""
+    flags = []
+
+    # High-interest debt flag
+    if profile.get("high_interest_debt"):
+        rate = profile.get("debt_rate_pct", 0)
+        balance = profile.get("debt_balance", 0)
+        rate_str = f" at ~{rate:.0f}%" if rate else ""
+        bal_str = (
+            f" ({profile.get('currency_symbol','')}{balance:,.0f})" if balance else ""
+        )
+        flags.append(
+            f"HIGH_INTEREST_DEBT{bal_str}{rate_str}: Pay down before aggressive investing — guaranteed return on every dollar."
+        )
+
+    # Emergency fund flag
+    ef_months = float(profile.get("emergency_fund_months", 3))
+    if ef_months < 3:
+        if ef_months == 0:
+            flags.append(
+                "NO_EMERGENCY_FUND: Build a 3-month cash buffer before investing — protect against forced asset sales."
+            )
+        else:
+            flags.append(
+                f"LOW_EMERGENCY_FUND ({ef_months:.0f} months): Target is 3-6 months. Consider building it before going all-in."
+            )
+
+    # Life insurance flag (only relevant if dependents)
+    if profile.get("has_dependents") and not profile.get("has_life_insurance"):
+        flags.append(
+            "NO_LIFE_INSURANCE + DEPENDENTS: Address life insurance before increasing investment risk. Term life is usually very affordable."
+        )
+
+    return flags
 
 
 def _calculate_allocation(profile: dict) -> dict:
@@ -721,6 +981,19 @@ def _calculate_allocation(profile: dict) -> dict:
     currency = profile.get("currency_code", "USD")
     symbol = profile.get("currency_symbol", "$")
     avoid = [a.lower() for a in profile.get("avoid_asset_classes", [])]
+    esg_preference = profile.get("esg_preference", "none")
+
+    # Resolve risk from behavioral profile + financial capacity signals
+    ef_months = float(profile.get("emergency_fund_months", 3))
+    has_dependents = profile.get("has_dependents", False)
+    high_interest_debt = profile.get("high_interest_debt", False)
+
+    # Downgrade risk if financial safety net is weak
+    if ef_months < 3 or high_interest_debt:
+        if risk == "high":
+            risk = "moderate"
+        elif risk == "moderate":
+            risk = "low"
 
     base = {
         "low": {
@@ -749,6 +1022,12 @@ def _calculate_allocation(profile: dict) -> dict:
         },
     }
     alloc = base.get(risk, base["moderate"]).copy()
+
+    # Dependents: nudge toward conservative
+    if has_dependents:
+        shift = 5
+        alloc["Bonds / Fixed Income"] = min(alloc["Bonds / Fixed Income"] + shift, 60)
+        alloc["Equities"] = max(alloc["Equities"] - shift, 0)
 
     # Time-horizon adjustment
     if years < 1:
@@ -792,7 +1071,9 @@ def _calculate_allocation(profile: dict) -> dict:
 
     active_alloc = {k: v for k, v in alloc.items() if v > 0}
     monthly = {k: round(invest * v / 100, 2) for k, v in active_alloc.items()}
-    recommendations = get_portfolio_recommendations(active_alloc, currency)
+    recommendations = get_portfolio_recommendations(
+        active_alloc, currency, esg_preference
+    )
 
     # Build rationale
     goal_notes = {
@@ -823,6 +1104,13 @@ def _calculate_allocation(profile: dict) -> dict:
         )
     )
 
+    # ESG note in rationale
+    if esg_preference in ("light", "full", "custom"):
+        rationale += f" ESG-screened alternatives have been prioritised where available ({esg_preference} preference)."
+
+    # Build flags
+    flags = _build_flags(profile)
+
     return {
         "profile_summary": {
             "name": profile.get("full_name", "Client"),
@@ -832,7 +1120,11 @@ def _calculate_allocation(profile: dict) -> dict:
             "invest_monthly": f"{symbol}{invest:,.2f}",
             "period_years": years,
             "goals": profile.get("investment_goals", []),
+            "knowledge_level": profile.get("knowledge_level", "intermediate"),
+            "involvement_level": profile.get("involvement_level", "occasional"),
+            "esg_preference": esg_preference,
         },
+        "priority_flags": flags,
         "asset_allocation_pct": active_alloc,
         "monthly_investment_split": {
             k: f"{symbol}{v:,.2f}" for k, v in monthly.items()
@@ -853,6 +1145,7 @@ def save_to_csv(session_id: str, profile: dict, result: dict):
     alloc = result.get("asset_allocation_pct", {})
     invest = float(profile.get("investment_amount", 0))
     recs = result.get("portfolio_recommendations", {})
+    flags = result.get("priority_flags", [])
 
     def pct(k):
         return alloc.get(k, 0)
@@ -880,6 +1173,19 @@ def save_to_csv(session_id: str, profile: dict, result: dict):
         "monthly_surplus": round(inflow - outflow, 2),
         "total_debt": debt,
         "debt_to_income_months": round(debt / max(inflow, 1), 2),
+        # New fields
+        "high_interest_debt": profile.get("high_interest_debt", False),
+        "debt_balance": profile.get("debt_balance", 0),
+        "debt_rate_pct": profile.get("debt_rate_pct", 0),
+        "emergency_fund_months": profile.get("emergency_fund_months", 0),
+        "has_employer_match": profile.get("has_employer_match", False),
+        "employer_match_details": profile.get("employer_match_details", ""),
+        "has_dependents": profile.get("has_dependents", False),
+        "has_life_insurance": profile.get("has_life_insurance", False),
+        "esg_preference": profile.get("esg_preference", "none"),
+        "involvement_level": profile.get("involvement_level", ""),
+        "knowledge_level": profile.get("knowledge_level", ""),
+        # Existing fields
         "risk_appetite": profile.get("risk_appetite", ""),
         "investment_amount": invest,
         "investment_period_years": profile.get("investment_period_years", ""),
@@ -904,6 +1210,7 @@ def save_to_csv(session_id: str, profile: dict, result: dict):
         "top_pick_commodities": pick("Commodities"),
         "top_pick_crypto": pick("Cryptocurrency"),
         "rationale": result.get("rationale", ""),
+        "flags": " | ".join(flags) if flags else "",
     }
 
     file_exists = os.path.isfile(CSV_FILE)
@@ -1070,10 +1377,12 @@ class BedrockStreamManager:
 
     SESSION_END_EVENT = '{"event": {"sessionEnd": {}}}'
 
+    # ── Updated schema: all original fields + new fields from design.md ──
     _ASSET_ALLOC_SCHEMA = json.dumps(
         {
             "type": "object",
             "properties": {
+                # Original fields
                 "full_name": {"type": "string"},
                 "region_stated": {"type": "string"},
                 "canonical_country": {"type": "string"},
@@ -1090,6 +1399,57 @@ class BedrockStreamManager:
                 "investment_period_years": {"type": "number"},
                 "investment_goals": {"type": "array", "items": {"type": "string"}},
                 "avoid_asset_classes": {"type": "array", "items": {"type": "string"}},
+                # New: Phase 1 — Financial Foundations
+                "high_interest_debt": {
+                    "type": "boolean",
+                    "description": "Whether the user has any high-interest debt (>~8% rate)",
+                },
+                "debt_balance": {
+                    "type": "number",
+                    "description": "Approximate balance of high-interest debt",
+                },
+                "debt_rate_pct": {
+                    "type": "number",
+                    "description": "Approximate interest rate on high-interest debt",
+                },
+                "emergency_fund_months": {
+                    "type": "number",
+                    "description": "Months of expenses covered by accessible savings (0 if none)",
+                },
+                "has_employer_match": {
+                    "type": "boolean",
+                    "description": "Whether the employer offers a 401k/pension match",
+                },
+                "employer_match_details": {
+                    "type": "string",
+                    "description": "Description of the match if known (e.g. '50% up to 6%')",
+                },
+                # New: Phase 5 — Life Situation
+                "has_dependents": {
+                    "type": "boolean",
+                    "description": "Whether the user has financial dependents (children, spouse, parents)",
+                },
+                "has_life_insurance": {
+                    "type": "boolean",
+                    "description": "Whether the user has adequate life insurance coverage",
+                },
+                # New: Phase 6 — Preferences
+                "esg_preference": {
+                    "type": "string",
+                    "enum": ["none", "light", "full", "custom"],
+                    "description": "User's ESG / values-based investing preference",
+                },
+                "involvement_level": {
+                    "type": "string",
+                    "enum": ["hands-off", "occasional", "active", "diy"],
+                    "description": "How involved the user wants to be in managing the portfolio",
+                },
+                # New: Phase 7 — Knowledge Level
+                "knowledge_level": {
+                    "type": "string",
+                    "enum": ["beginner", "basic", "intermediate", "advanced", "expert"],
+                    "description": "User's self-assessed financial literacy level",
+                },
             },
             "required": [
                 "full_name",
@@ -1134,8 +1494,11 @@ class BedrockStreamManager:
                                             "recommendations for the client. YOU must populate "
                                             "canonical_country, currency_code, and currency_symbol "
                                             "based on the region/city the user mentioned — do NOT ask "
-                                            "the user for currency. Call this tool ONLY after all 10 "
-                                            "questions are answered and the user confirms the summary."
+                                            "the user for currency. Call this tool ONLY after all "
+                                            "questions are answered across all phases and the user "
+                                            "confirms the summary. Include all new fields collected "
+                                            "during the conversation (emergency_fund_months, "
+                                            "has_dependents, esg_preference, knowledge_level, etc.)."
                                         ),
                                         "inputSchema": {
                                             "json": self._ASSET_ALLOC_SCHEMA
